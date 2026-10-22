@@ -1,0 +1,6 @@
+/work/
+/artifacts/
+/evidence/
+/delivery/
+__pycache__/
+*.py[cod]

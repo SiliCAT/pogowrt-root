@@ -1,0 +1,296 @@
+name: Build OpenWrt for PogoPlug V4
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  OPENWRT_REPOSITORY: https://github.com/openwrt/openwrt.git
+  OPENWRT_TAG: v25.12.0
+  OPENWRT_COMMIT: 4da53efc2fe744601e6189492dbd06b8930d72b8
+
+jobs:
+  build:
+    name: PogoPlug V4
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Check out project repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          path: project
+          persist-credentials: false
+
+      - name: Report build machine resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          python3 "$GITHUB_WORKSPACE/project/scripts/report-build.py" runner \
+            --workspace "$GITHUB_WORKSPACE" \
+            | tee "$GITHUB_WORKSPACE/evidence/runner-before.json"
+
+      - name: Install host build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            binutils bison build-essential bzip2 ca-certificates curl file flex \
+            gawk gettext git libelf-dev libncurses-dev libssl-dev patch \
+            perl pkgconf python3 python3-setuptools rsync subversion \
+            swig time unzip wget xz-utils zlib1g-dev zstd
+
+      - name: Check out pinned OpenWrt source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/openwrt
+          git -C work/openwrt init
+          git -C work/openwrt remote add origin "$OPENWRT_REPOSITORY"
+          git -C work/openwrt fetch --depth=1 origin "$OPENWRT_COMMIT"
+          git -C work/openwrt checkout --detach FETCH_HEAD
+
+      - name: Report OpenWrt source revision
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          python3 "$GITHUB_WORKSPACE/project/scripts/report-build.py" source \
+            --workspace "$GITHUB_WORKSPACE" \
+            | tee "$GITHUB_WORKSPACE/evidence/source-report.json"
+
+      - name: Configure pinned feeds
+        working-directory: work/openwrt
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > feeds.conf <<'EOF'
+          src-git packages https://github.com/openwrt/packages.git^506c37591d7cd9b3cfd812e69e708349268f9865
+          src-git luci https://github.com/openwrt/luci.git^27a9c0c94264063894d40420956696d19b175744
+          src-git routing https://github.com/openwrt/routing.git^662b57dff7d20634f2b8676400cf4299611cfe4b
+          src-git telephony https://github.com/openwrt/telephony.git^2618106d5846a4a542fdf5809f0d3ed228ce439b
+          src-git video https://github.com/openwrt/video.git^094bf58da6682f895255a35a84349a79dab4bf95
+          EOF
+
+      - name: Update and install pinned feeds
+        working-directory: work/openwrt
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          ./scripts/feeds update -a 2>&1 | tee "$GITHUB_WORKSPACE/evidence/feeds-update.log"
+          ./scripts/feeds install -a 2>&1 | tee "$GITHUB_WORKSPACE/evidence/feeds-install.log"
+
+      - name: Report feed revisions and indexes
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          python3 "$GITHUB_WORKSPACE/project/scripts/report-build.py" feeds \
+            --workspace "$GITHUB_WORKSPACE" \
+            | tee "$GITHUB_WORKSPACE/evidence/feeds-report.json"
+
+      - name: Import project build inputs
+        working-directory: work/openwrt
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          project_dir="$GITHUB_WORKSPACE/project"
+
+          cp "$project_dir/configs/openwrt.config" .config
+          mkdir -p env files/sbin
+          cp "$project_dir/configs/kernel.config" env/kernel-config
+          install -m 0755 "$project_dir/files/sbin/sd-init" files/sbin/sd-init
+
+      - name: Report imported build inputs
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          python3 "$GITHUB_WORKSPACE/project/scripts/report-build.py" inputs \
+            --workspace "$GITHUB_WORKSPACE" \
+            | tee "$GITHUB_WORKSPACE/evidence/inputs-report.json"
+
+      - name: Resolve OpenWrt configuration
+        working-directory: work/openwrt
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          make defconfig 2>&1 | tee "$GITHUB_WORKSPACE/evidence/defconfig.log"
+
+      - name: Report resolved OpenWrt configuration
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          python3 "$GITHUB_WORKSPACE/project/scripts/report-build.py" resolved-config \
+            --workspace "$GITHUB_WORKSPACE" \
+            | tee "$GITHUB_WORKSPACE/evidence/openwrt-config-report.json"
+
+      - name: Download source packages
+        working-directory: work/openwrt
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          TIMEFORMAT='Download elapsed: %3R seconds'
+          { time make download -j2 V=s; } 2>&1 \
+            | tee "$GITHUB_WORKSPACE/evidence/download.log"
+
+      - name: Build complete firmware
+        working-directory: work/openwrt
+        shell: bash
+        timeout-minutes: 300
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          TIMEFORMAT='Build elapsed: %3R seconds'
+          { time make -j2 V=s; } 2>&1 \
+            | tee "$GITHUB_WORKSPACE/evidence/build.log"
+
+      - name: Report built kernel and BusyBox configurations
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          python3 "$GITHUB_WORKSPACE/project/scripts/report-build.py" built-configs \
+            --workspace "$GITHUB_WORKSPACE" \
+            | tee "$GITHUB_WORKSPACE/evidence/built-configs-report.json"
+
+      - name: Report assembled root filesystem
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          python3 "$GITHUB_WORKSPACE/project/scripts/report-rootfs.py" \
+            --root "$GITHUB_WORKSPACE/work/openwrt/build_dir/target-arm_xscale_musl_eabi/root-kirkwood" \
+            --kernel-config "$GITHUB_WORKSPACE/work/openwrt/build_dir/target-arm_xscale_musl_eabi/linux-kirkwood_generic/linux-6.12.*/.config" \
+            --sd-init "$GITHUB_WORKSPACE/project/files/sbin/sd-init" \
+            | tee "$GITHUB_WORKSPACE/evidence/rootfs-report.json"
+
+      - name: Report built images and initramfs sources
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          python3 "$GITHUB_WORKSPACE/project/scripts/report-images.py" built \
+            --workspace "$GITHUB_WORKSPACE" \
+            | tee "$GITHUB_WORKSPACE/evidence/built-images-report.json"
+
+      - name: Export images and align SquashFS copy
+        id: export_images
+        working-directory: work/openwrt
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          output_dir="$GITHUB_WORKSPACE/artifacts/openwrt"
+          mkdir -p "$output_dir" "$GITHUB_WORKSPACE/evidence"
+          cp bin/targets/kirkwood/generic/openwrt-kirkwood-generic-cloudengines_pogoplugv4-initramfs-uImage \
+            "$output_dir/lio-uImage"
+          cp build_dir/target-arm_xscale_musl_eabi/linux-kirkwood_generic/root.squashfs \
+            "$output_dir/lio-root-aligned.squashfs"
+          original_size=$(stat -c '%s' "$output_dir/lio-root-aligned.squashfs")
+          aligned_size=$(( ((original_size + 4095) / 4096) * 4096 ))
+          truncate -s "$aligned_size" "$output_dir/lio-root-aligned.squashfs"
+          printf '{"original_copy_bytes":%s,"requested_aligned_bytes":%s,"alignment_bytes":4096}\n' \
+            "$original_size" "$aligned_size" \
+            > "$GITHUB_WORKSPACE/evidence/export-operation.json"
+
+      - name: Report exported images
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          python3 "$GITHUB_WORKSPACE/project/scripts/report-images.py" exported \
+            --workspace "$GITHUB_WORKSPACE" \
+            | tee "$GITHUB_WORKSPACE/evidence/exported-images-report.json"
+
+      - name: Collect build evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          python3 "$GITHUB_WORKSPACE/project/scripts/report-build.py" evidence \
+            --workspace "$GITHUB_WORKSPACE" \
+            | tee "$GITHUB_WORKSPACE/evidence/collection-report.json"
+
+      - name: Report final disk usage
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          python3 "$GITHUB_WORKSPACE/project/scripts/report-build.py" disk \
+            --workspace "$GITHUB_WORKSPACE" \
+            | tee "$GITHUB_WORKSPACE/evidence/disk-after.json"
+
+      - name: Package build evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$GITHUB_WORKSPACE/evidence" "$GITHUB_WORKSPACE/delivery"
+          tar -C "$GITHUB_WORKSPACE" -czf \
+            "$GITHUB_WORKSPACE/delivery/pogov4-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tar.gz" \
+            evidence
+
+      - name: Upload firmware images
+        id: images
+        if: ${{ !cancelled() && steps.export_images.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: pogov4-images-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/
+          compression-level: 0
+
+      - name: Upload build evidence
+        id: evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          path: delivery/pogov4-evidence-${{ github.run_id }}-${{ github.run_attempt }}.tar.gz
+          archive: false
+
+      - name: Write artifact download information
+        if: ${{ always() }}
+        shell: bash
+        env:
+          IMAGE_ARTIFACT_URL: ${{ steps.images.outputs.artifact-url }}
+          IMAGE_ARTIFACT_ID: ${{ steps.images.outputs.artifact-id }}
+          IMAGE_ARTIFACT_DIGEST: ${{ steps.images.outputs.artifact-digest }}
+          EVIDENCE_ARTIFACT_URL: ${{ steps.evidence.outputs.artifact-url }}
+          EVIDENCE_ARTIFACT_ID: ${{ steps.evidence.outputs.artifact-id }}
+          EVIDENCE_ARTIFACT_DIGEST: ${{ steps.evidence.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          {
+            printf '|交付物|下载入口|Artifact ID|Artifact SHA-256|\n'
+            printf '|---|---|---|---|\n'
+            printf '|镜像|%s|%s|%s|\n' \
+              "${IMAGE_ARTIFACT_URL:-未取得，参见上传步骤记录}" \
+              "${IMAGE_ARTIFACT_ID:-未取得}" "${IMAGE_ARTIFACT_DIGEST:-未取得}"
+            printf '|构建证据|%s|%s|%s|\n' \
+              "${EVIDENCE_ARTIFACT_URL:-未取得，参见上传步骤记录}" \
+              "${EVIDENCE_ARTIFACT_ID:-未取得}" "${EVIDENCE_ARTIFACT_DIGEST:-未取得}"
+            printf '\n检查报告仅列要求值、实际观察值及无法取得信息的原因；此处不提供固件质量或实机验收结论。\n'
+          } >> "$GITHUB_STEP_SUMMARY"
