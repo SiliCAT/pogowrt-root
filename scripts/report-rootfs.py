@@ -67,8 +67,9 @@ def report_elf(report, rootfs, name):
     return interpreters or [], needed or []
 
 
-def report_programs(report, rootfs):
+def report_programs(report, rootfs, extra_tools=()):
     tools = ["/bin/busybox", "/usr/sbin/blkid", "/usr/sbin/losetup", "/usr/bin/util-linux-flock", "/sbin/lvm", "/sbin/mount.nfs"]
+    tools.extend(extra_tools)
     for name, target in [
         ("/bin/sh", "/bin/busybox"),
         ("/usr/bin/flock", "/usr/bin/util-linux-flock"),
@@ -167,15 +168,22 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--kernel-config", type=Path, required=True)
-    parser.add_argument("--sd-init", type=Path, required=True)
+    parser.add_argument("--sd-init", type=Path)
+    parser.add_argument("--luci", action="store_true", help="Record LuCI files, services and executables")
     args = parser.parse_args()
     report = Report()
     rootfs = Rootfs(args.root)
     report.observe("Target root", "Assembled OpenWrt root directory", lambda: file_metadata(rootfs.root))
-    expected_digest = report.observe("Project sd-init SHA-256", "Record reviewed input digest", lambda: digest(args.sd_init))
-    report.observe("Installed sd-init SHA-256", expected_digest or "Same content as project sd-init", lambda: digest(rootfs.resolve("/sbin/sd-init")))
-    report.observe("Installed sd-init mode", "0755", lambda: file_metadata(rootfs.resolve("/sbin/sd-init"))["mode"])
-    report_programs(report, rootfs)
+    if args.sd_init is not None:
+        expected_digest = report.observe("Project sd-init SHA-256", "Record reviewed input digest", lambda: digest(args.sd_init))
+        report.observe("Installed sd-init SHA-256", expected_digest or "Same content as project sd-init", lambda: digest(rootfs.resolve("/sbin/sd-init")))
+        report.observe("Installed sd-init mode", "0755", lambda: file_metadata(rootfs.resolve("/sbin/sd-init"))["mode"])
+    if args.luci:
+        for name in ["/www/cgi-bin/luci", "/etc/config/uhttpd", "/etc/init.d/uhttpd", "/etc/init.d/rpcd"]:
+            report.observe(f"LuCI file: {name}", "Installed LuCI entry point or service configuration", lambda name=name: file_metadata(rootfs.resolve(name)))
+        for service in ["uhttpd", "rpcd"]:
+            report.observe(f"LuCI service links: {service}", "Startup links installed by package defaults", lambda service=service: sorted(str(path.relative_to(rootfs.root)) for path in rootfs.resolve("/etc/rc.d").glob(f"S*{service}")))
+    report_programs(report, rootfs, ["/usr/sbin/uhttpd", "/sbin/rpcd", "/usr/bin/ucode"] if args.luci else [])
     report_modules(report, rootfs, args.kernel_config)
     report.emit()
 

@@ -104,7 +104,10 @@ jobs:
           umask 022
           project_dir="$GITHUB_WORKSPACE/project"
 
-          cp "$project_dir/configs/openwrt.config" .config
+          python3 "$project_dir/scripts/prepare-build-config.py" \
+            --project "$project_dir" --output .config
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          cp .config "$GITHUB_WORKSPACE/evidence/openwrt.config.input"
           mkdir -p env files/sbin
           cp "$project_dir/configs/kernel.config" env/kernel-config
           install -m 0755 "$project_dir/files/sbin/sd-init" files/sbin/sd-init
@@ -211,14 +214,10 @@ jobs:
           mkdir -p "$output_dir" "$GITHUB_WORKSPACE/evidence"
           cp bin/targets/kirkwood/generic/openwrt-kirkwood-generic-cloudengines_pogoplugv4-initramfs-uImage \
             "$output_dir/lio-uImage"
-          cp build_dir/target-arm_xscale_musl_eabi/linux-kirkwood_generic/root.squashfs \
-            "$output_dir/lio-root-aligned.squashfs"
-          original_size=$(stat -c '%s' "$output_dir/lio-root-aligned.squashfs")
-          aligned_size=$(( ((original_size + 4095) / 4096) * 4096 ))
-          truncate -s "$aligned_size" "$output_dir/lio-root-aligned.squashfs"
-          printf '{"original_copy_bytes":%s,"requested_aligned_bytes":%s,"alignment_bytes":4096}\n' \
-            "$original_size" "$aligned_size" \
-            > "$GITHUB_WORKSPACE/evidence/export-operation.json"
+          python3 "$GITHUB_WORKSPACE/project/scripts/export-rootfs.py" \
+            --source build_dir/target-arm_xscale_musl_eabi/linux-kirkwood_generic/root.squashfs \
+            --output "$output_dir/lio-root-aligned.squashfs" \
+            --record "$GITHUB_WORKSPACE/evidence/export-operation.json"
 
       - name: Report exported images
         if: ${{ always() }}

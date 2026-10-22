@@ -91,6 +91,33 @@ class ReportsTest(unittest.TestCase):
         self.assertIsNotNone(missing["unavailable_reason"])
         self.assertEqual((self.workspace / "evidence/openwrt.config.resolved").read_bytes(), config.read_bytes())
 
+    def test_shared_base_and_ib_extra_values_are_observed_independently(self):
+        self.write("project/configs/openwrt.config", "CONFIG_TARGET_kirkwood=y\n")
+        self.write("project/configs/packages/base.list", "flock\n")
+        self.write("project/configs/ib-extra.config", "CONFIG_PACKAGE_luci=m\n")
+        config = self.write("work/openwrt/.config", "CONFIG_TARGET_kirkwood=y\nCONFIG_PACKAGE_flock=m\n# CONFIG_PACKAGE_luci is not set\n")
+        rows = self.build_report("resolved-config")
+        self.assertEqual(rows[f"{config}: CONFIG_PACKAGE_flock"]["requirement"], "y")
+        self.assertEqual(rows[f"{config}: CONFIG_PACKAGE_flock"]["observed"], "m")
+        self.assertEqual(rows[f"{config}: CONFIG_PACKAGE_luci"]["requirement"], "m")
+        self.assertEqual(rows[f"{config}: CONFIG_PACKAGE_luci"]["observed"], "n")
+
+    def test_imported_config_is_compared_to_composition_and_all_inputs_are_retained(self):
+        self.write("project/configs/openwrt.config", "CONFIG_TARGET_kirkwood=y\n")
+        self.write("project/configs/packages/base.list", "flock\n")
+        self.write("project/configs/ib-extra.config", "CONFIG_PACKAGE_luci=m\n")
+        imported = self.write("work/openwrt/.config", "")
+        subprocess.run([sys.executable, str(PROJECT / "scripts/prepare-build-config.py"),
+                        "--project", str(self.workspace / "project"), "--output", str(imported)], check=True)
+        composed = imported.read_text()
+        rows = self.build_report("inputs")
+        expected = hashlib.sha256(composed.encode()).hexdigest()
+        self.assertEqual(rows["Imported SHA-256: .config"]["requirement"], expected)
+        self.assertEqual(rows["Imported SHA-256: .config"]["observed"], expected)
+        self.build_report("evidence")
+        for relative in ["configs/openwrt.config", "configs/ib-extra.config", "configs/packages/base.list"]:
+            self.assertEqual((self.workspace / "evidence/inputs" / relative).read_bytes(), (self.workspace / "project" / relative).read_bytes())
+
     def test_imagebuilder_reports_all_archives_and_differences_without_a_verdict(self):
         config = self.write("work/openwrt/.config", "# CONFIG_IB is not set\nCONFIG_IB_STANDALONE=y\n")
         archive = self.write("work/openwrt/bin/targets/kirkwood/generic/openwrt-imagebuilder-kirkwood-generic.Linux-x86_64.tar.zst", b"source archive fixture")

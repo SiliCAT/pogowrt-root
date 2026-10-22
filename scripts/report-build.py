@@ -2,12 +2,14 @@
 """Report build inputs and configurations; observations never select build policy."""
 
 import argparse
+import hashlib
 import os
 from pathlib import Path
 import shutil
 import subprocess
 
 from reporting import Report, command_output, config_values, digest, file_metadata, report_config
+from build_inputs import package_list, source_config
 
 
 STORAGE_OPTIONS = [
@@ -69,8 +71,11 @@ def main():
             report.observe(f"Feed index: {name}", "Nonempty package index", lambda name=name: file_metadata(source / "feeds" / f"{name}.index"))
 
     elif args.phase == "inputs":
+        for relative in ["configs/openwrt.config", "configs/ib-extra.config", "configs/packages/base.list"]:
+            report.observe(f"Input SHA-256: {relative}", "Record project input digest", lambda relative=relative: digest(project / relative))
+        expected = report.observe("Composed OpenWrt input SHA-256", "Hardware fragment, base packages selected as y, then IB extra fragment", lambda: hashlib.sha256(source_config(project).encode()).hexdigest())
+        report.observe("Imported SHA-256: .config", expected or "Same digest as the composed OpenWrt input", lambda: digest(source / ".config"))
         for relative, destination in [
-            ("configs/openwrt.config", ".config"),
             ("configs/kernel.config", "env/kernel-config"),
             ("files/sbin/sd-init", "files/sbin/sd-init"),
         ]:
@@ -84,6 +89,10 @@ def main():
 
     elif args.phase == "resolved-config":
         requirements = report.observe("OpenWrt input options", "Read requirements from the reviewed project fragment", lambda: config_values(project / "configs/openwrt.config")) or {}
+        base_packages = report.observe("Base package selections", "Installed in both source-built and IB rootfs", lambda: package_list(project / "configs/packages/base.list"))
+        requirements.update({f"CONFIG_PACKAGE_{name}": "y" for name in base_packages or []})
+        extras = report.observe("IB extra input options", "Compile-only package selections for standalone IB", lambda: config_values(project / "configs/ib-extra.config")) or {}
+        requirements.update(extras)
         requirements.update({
             "CONFIG_TARGET_ROOTFS_INITRAMFS": "y", "CONFIG_TARGET_ROOTFS_SQUASHFS": "y",
             "CONFIG_EXTERNAL_CPIO": '""', "CONFIG_TARGET_ROOTFS_INITRAMFS_SEPARATE": "n",
@@ -135,7 +144,7 @@ def main():
         report.observe("Project HEAD", "Record the project revision used by this run", lambda: command_output(["git", "rev-parse", "HEAD"], cwd=project))
         for name in ["GITHUB_REPOSITORY", "GITHUB_SHA", "GITHUB_REF", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "OPENWRT_TAG", "OPENWRT_COMMIT"]:
             report.add(name, "Record declared run context", os.environ.get(name), None if name in os.environ else "Variable was not supplied to this process")
-        for relative in ["configs/openwrt.config", "configs/kernel.config", "files/sbin/sd-init"]:
+        for relative in ["configs/openwrt.config", "configs/ib-extra.config", "configs/packages/base.list", "configs/kernel.config", "files/sbin/sd-init"]:
             snapshot(report, project / relative, evidence / "inputs" / relative)
         snapshot(report, source / "feeds.conf", evidence / "inputs/feeds.conf")
         snapshot(report, source / ".config", evidence / "openwrt.config.final")

@@ -12,35 +12,12 @@ import struct
 import zlib
 
 from reporting import ObservationUnavailable, Report, digest, file_metadata, report_config
+from image_metadata import padding_bytes, prefix_digest, squashfs_header
 
 
 UIMAGE = Path("bin/targets/kirkwood/generic/openwrt-kirkwood-generic-cloudengines_pogoplugv4-initramfs-uImage")
 SQUASHFS = Path("build_dir/target-arm_xscale_musl_eabi/linux-kirkwood_generic/root.squashfs")
 KERNEL_PATTERN = "build_dir/target-arm_xscale_musl_eabi/linux-kirkwood_generic/linux-6.12.*/.config"
-
-
-def prefix_digest(path, length):
-    checksum = hashlib.sha256()
-    count = 0
-    with path.open("rb") as stream:
-        while count < length:
-            chunk = stream.read(min(1024 * 1024, length - count))
-            if not chunk:
-                break
-            count += len(chunk)
-            checksum.update(chunk)
-    return {"bytes_hashed": count, "sha256": checksum.hexdigest()}
-
-
-def padding_bytes(path, offset):
-    count = 0
-    nonzero = 0
-    with path.open("rb") as stream:
-        stream.seek(offset)
-        while chunk := stream.read(1024 * 1024):
-            count += len(chunk)
-            nonzero += len(chunk) - chunk.count(0)
-    return {"bytes": count, "nonzero_bytes": nonzero}
 
 
 def uimage_header(path):
@@ -74,20 +51,6 @@ def payload_crc(path, size):
             checksum = zlib.crc32(chunk, checksum)
             count += len(chunk)
     return {"bytes_read": count, "crc32": f"{checksum & 0xffffffff:08x}"}
-
-
-def squashfs_header(path):
-    with path.open("rb") as stream:
-        header = stream.read(96)
-    if len(header) != 96:
-        raise ObservationUnavailable(f"A 96-byte SquashFS superblock could not be read; obtained {len(header)} bytes")
-    fields = struct.unpack("<5I6H8Q", header)
-    return {
-        "magic": f"0x{fields[0]:08x}", "inode_count": fields[1],
-        "creation_time": fields[2], "block_size": fields[3], "fragment_count": fields[4],
-        "compression_id": fields[5], "version": f"{fields[9]}.{fields[10]}",
-        "filesystem_bytes_used": fields[12],
-    }
 
 
 def image_observations(report, uimage, squashfs):

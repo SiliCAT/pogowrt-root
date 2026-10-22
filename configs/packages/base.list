@@ -1,0 +1,12 @@
+# Extra packages installed in both the source-built image and IB rootfs.
+blkid
+flock
+losetup
+kmod-loop
+kmod-fs-vfat
+kmod-fs-f2fs
+kmod-fs-nfs-v4
+kmod-fs-xfs
+kmod-usb-storage
+lvm2
+nfs-utils-v4
