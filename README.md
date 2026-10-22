@@ -46,7 +46,21 @@ FAT 上的 `boot/init`、`boot/uEnv.txt` 尚未纳入本仓库。SD 卡制作、
 3. 点击 **Run workflow**，选择构建分支并启动。
 4. 在运行页面查看日志和下载区。
 
-工作流使用 `ubuntu-24.04` amd64 托管构建机，以普通用户执行 OpenWrt make。安装依赖时使用 sudo。构建顺序为固定源码和 feeds、导入输入、`make defconfig`、`make download -j2 V=s`、`make -j2 V=s`、生成观测报告、导出、上传。
+工作流使用 `ubuntu-24.04` amd64 托管构建机，以普通用户执行 OpenWrt make。安装依赖时使用 sudo。构建顺序为固定源码和 feeds、导入输入、`make defconfig`、`make download -j2 V=s`、分阶段完成内核配置和固件编译、生成观测报告、导出、上传。
+
+在 OpenWrt 源码根目录中，构建分为两次调用：
+
+```sh
+make -j2 -f Makefile -f "$PROJECT_DIR/scripts/kernel-olddefconfig.mk" \
+  V=s pogowrt-kernel-olddefconfig
+make -j2 V=s
+```
+
+`PROJECT_DIR` 指向本仓库的绝对路径；工作流中对应 `$GITHUB_WORKSPACE/project`。第一条命令同时加载官方 Makefile 和本仓库的附加 Makefile。附加目标先复用官方 `prepare_kernel_conf` 准备工具链及 quilt，再进入 Kirkwood 目标，执行官方 `.configured` 目标合并内核配置，最后单独调用内核的 `olddefconfig`。第二条命令继续官方完整构建。顶层 `make defconfig` 展开 OpenWrt 软件包配置，与内核的配置展开不同。
+
+附加 Makefile 保存在本仓库，不修改官方构建代码。该调用方式依赖当前固定版本中的目标和变量，升级 OpenWrt 时需要重新核对。两次调用之间不更改配置、feeds 或源码；在合并输入不变时，官方流程会保留已补全的内核 `.config`。如果调整输入，应重新执行第一条命令。此流程用于补全启用 LIO 后出现的新选项，避免在 `TCM_FILEIO` 等处进入交互提问。
+
+内核配置阶段的输出保存为 `evidence/kernel-olddefconfig.log`，两个阶段的输出和合计耗时保存在 `evidence/build.log`，共享原来的 300 分钟步骤上限。依赖条件不满足时，Kconfig 仍可能调整要求的功能，最终值由现有报告记录。
 
 整个 job 上限为 360 分钟，完整编译步骤上限为 300 分钟。这些是执行时限，首次干净构建的实际耗时和磁盘占用尚待记录。工作流只配置手动触发。
 
@@ -82,10 +96,10 @@ SquashFS 对构建原文件的副本补零到 4096 字节边界，构建原文�
 
 报告脚本位于 `scripts/`，仅依赖 Python 标准库；ELF 信息采集调用宿主 `readelf`。工作流使用 `project/` 放置本仓库、`work/openwrt/` 放置上游源码，`evidence/`、`artifacts/`、`delivery/` 分别存放证据、镜像副本和证据包。
 
-报告行为测试使用临时目录和模拟数据，可执行：
+报告行为和分阶段调用测试使用临时目录及模拟数据；分阶段调用测试还需要 GNU make。可执行：
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 ```
 
-这些测试覆盖报告行为和文件处理，不运行完整 OpenWrt 构建，也不代表真实固件已完成验收。后续自动化协作遵循 `AGENTS.md` 中的报告原则。
+这些测试覆盖报告行为、文件处理和阶段调用顺序，不运行完整 OpenWrt 构建，也不代表真实固件已完成验收。后续自动化协作遵循 `AGENTS.md` 中的报告原则。

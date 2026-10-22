@@ -158,7 +158,13 @@ jobs:
           umask 022
           mkdir -p "$GITHUB_WORKSPACE/evidence"
           TIMEFORMAT='Build elapsed: %3R seconds'
-          { time make -j2 V=s; } 2>&1 \
+          { time {
+            make -j2 -f Makefile \
+              -f "$GITHUB_WORKSPACE/project/scripts/kernel-olddefconfig.mk" \
+              V=s pogowrt-kernel-olddefconfig \
+              2>&1 | tee "$GITHUB_WORKSPACE/evidence/kernel-olddefconfig.log"
+            make -j2 V=s
+          }; } 2>&1 \
             | tee "$GITHUB_WORKSPACE/evidence/build.log"
 
       - name: Report built kernel and BusyBox configurations
