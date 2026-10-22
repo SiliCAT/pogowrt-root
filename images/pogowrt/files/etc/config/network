@@ -1,0 +1,15 @@
+config interface 'loopback'
+        option device 'lo'
+        option proto 'static'
+        list ipaddr '127.0.0.1/8'
+
+config device
+        option name 'br-lan'
+        option type 'bridge'
+        list ports 'eth0'
+        option ipv6 '0'
+
+config interface 'lan'
+        option device 'br-lan'
+        option proto 'static'
+        list ipaddr '172.16.16.1/24'

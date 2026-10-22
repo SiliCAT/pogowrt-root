@@ -1,0 +1,10 @@
+config odhcpd 'odhcpd'
+        option maindhcp '0'
+        option leasefile '/tmp/odhcpd.leases'
+        option leasetrigger '/usr/sbin/odhcpd-update'
+        option loglevel '4'
+
+config dnsmasq
+        option port '0'
+        option localservice '1'
+        option localuse '0'

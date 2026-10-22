@@ -1,0 +1,3 @@
+# Keep these packages installed but remove their automatic startup links.
+dnsmasq
+odhcpd

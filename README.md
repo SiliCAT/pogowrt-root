@@ -1,23 +1,28 @@
 # pogowrt-root
 
-为 PogoPlug V4 编译基础镜像和自包含 ImageBuilder，再使用指定的 ImageBuilder 组装包含 LuCI 的外置 SquashFS rootfs。
+为 PogoPlug V4 编译基础镜像和自包含 ImageBuilder，再使用指定的 ImageBuilder 组装 `pogowrt` 或 `luci` 配方，导出 SquashFS 和根目录 tar.gz 归档。
 
-提交 `370146e` 的 [Actions 运行 39735742145](https://github.com/SiliCAT/pogowrt-root/actions/runs/39735742145) 已取得完整编译和两份基础镜像导出的记录。后续提交增加了 IB 导出；本次将基础包清单共用，并增加 LuCI 的预编译选择和 IB 组装工作流。这些新增流程尚待实际构建记录，没有实机启动记录。
+提交 `370146e` 的 [Actions 运行 39735742145](https://github.com/SiliCAT/pogowrt-root/actions/runs/39735742145) 已取得完整编译和两份基础镜像导出的记录。后续提交增加了 IB 导出；已有基础包共用清单、LuCI 预编译选择和 IB 组装工作流。本次增加 PogoWrt 配方、服务禁用清单及 tar.gz 导出。这些新增流程尚待实际构建记录，没有实机启动记录。
 
 ## 仓库结构和两个阶段
 
 ```text
 .github/workflows/
   build.yml                  源码编译：基础镜像、IB、证据
-  build-rootfs.yml           使用指定 IB：LuCI rootfs、证据
+  build-rootfs.yml           使用指定 IB：所选配方的 rootfs、证据
 configs/
   openwrt.config             设备、BusyBox 和 IB 构建选项
   kernel.config              内核定制
   ib-extra.config            为 IB 额外编译的软件包，通常选为 m
   packages/base.list         两个阶段共用的基础软件包名称
-images/luci/
-  packages.list              LuCI rootfs 额外安装的软件包
-  files/                     LuCI rootfs 注入的配置文件
+images/pogowrt/              静态 IPv4、hostname、DHCP 和防火墙配置
+  packages.list              额外软件包，目前为空
+  disabled-services.list     dnsmasq、odhcpd 不开机启动
+  files/                     配置文件和 hostname 首次启动脚本
+images/luci/                 独立的 LuCI 配方
+  packages.list              额外安装 luci
+  disabled-services.list     为空，沿用包默认启动设置
+  files/                     此配方的注入文件
 files/sbin/sd-init           源码构建使用的早期启动入口
 scripts/                    配置合成、IB 调用、镜像导出及观察报告
 tests/                      使用临时数据验证辅助工具
@@ -115,16 +120,21 @@ IB 由官方构建流程在 `bin/targets/kirkwood/generic/` 中生成。工作�
 
 源码工作流完成后，记下该次运行页面 URL 中的运行编号，以及对应的尝试次数。运行编号不是提交号，也不是 Artifact ID；首次执行的尝试次数为 `1`。
 
-在 **Actions → Assemble LuCI rootfs from ImageBuilder → Run workflow** 中选择组装配方所在分支，填写：
+在 **Actions → Assemble rootfs from ImageBuilder → Run workflow** 中选择组装配方所在分支，填写：
 
 | 输入 | 含义 |
 |---|---|
+| `image` | 配方，`pogowrt`（默认）或 `luci` |
 | `source_run_id` | 已上传所需 IB 的源码构建运行编号 |
 | `source_run_attempt` | 该次构建的尝试次数，默认为 `1` |
 
 新工作流使用自动提供的 `github.token`，授予 `contents: read` 和 `actions: read`，从同一仓库的指定运行下载 `pogov4-imagebuilder-<run_id>-<run_attempt>.tar.zst`。下载动作固定为支持原始文件 artifact 的 `actions/download-artifact` v8 提交，无需另外配置个人令牌。来源 artifact 必须仍在 GitHub 保留期内。
 
-解压后，`scripts/build-rootfs.py` 合并 `configs/packages/base.list` 和 `images/luci/packages.list`，调用官方 IB 的 `make image`。清单允许空行、`#` 注释和每行一个包名；重复名称只安装一次。包依赖由 IB 的包管理器计算。
+解压后，`scripts/build-rootfs.py --image <配方名>` 合并 `configs/packages/base.list` 和 `images/<配方名>/packages.list`，调用官方 IB 的 `make image`。清单允许空行、`#` 注释和每行一个包名；重复名称只安装一次。包依赖由 IB 的包管理器计算。
+
+`images/<配方名>/disabled-services.list` 每行列一个服务名，传给官方 IB 的 `DISABLED_SERVICES` 参数。IB 取消相应的自动启动链接，保留软件包及配置，不通过首次启动脚本停用服务。`pogowrt` 列出 `dnsmasq`、`odhcpd`，`luci` 清单为空。两种配方不自动继承彼此的文件和服务设置。
+
+`pogowrt` 使用静态 IPv4 `172.16.16.1/24`，保留 `br-lan`/`eth0`，不配置默认网关和 DNS；关闭 LAN 的 IPv6，不整机禁用 IPv6。hostname 由 `99-pogowrt-hostname` 在首次启动时设为 `PogoWrt`。配置细节见 [PogoWrt 配方](images/pogowrt/README.md)。它不追加 LuCI，可使用包含所需基础包的既有 IB。
 
 `images/luci/packages.list` 当前选择 `luci` 集合包，由它带入界面、主题、uhttpd、RPC 支持等依赖。仅在此列表新增一个包，不会让旧 IB 自动拥有该包；需要额外预编译时，同步调整 `configs/ib-extra.config` 并重新生成 IB。
 
@@ -132,12 +142,14 @@ IB 由官方构建流程在 `bin/targets/kirkwood/generic/` 中生成。工作�
 
 | Artifact | 内容 |
 |---|---|
-| `pogov4-luci-rootfs-<run_id>-<run_attempt>` | ZIP，包含 `luci/luci-root-aligned.squashfs` |
-| `pogov4-luci-evidence-<run_id>-<run_attempt>.tar.gz` | IB 来源运行及提交、IB 摘要、组装参数、输入配置、安装包 manifest、日志和观察报告 |
+| `pogov4-<image>-rootfs-<run_id>-<run_attempt>` | ZIP，包含 `<image>/<image>-root-aligned.squashfs` 和 `<image>/<image>-rootfs.tar.gz` |
+| `pogov4-<image>-evidence-<run_id>-<run_attempt>.tar.gz` | IB 来源运行及提交、IB 摘要、组装参数、注入文件和服务清单、安装包 manifest、日志和观察报告 |
 
-基础镜像和 LuCI rootfs 共用 `scripts/export-rootfs.py`，只对副本补零到 4096 字节边界。观察报告记录原始前缀摘要和追加字节，不根据观察结果控制上传。LuCI 报告还记录界面入口、uhttpd/rpcd 配置、启动链接及可执行文件信息，不在 amd64 构建机运行 ARM 服务。
+源码构建的基础镜像和各 IB 配方共用 `scripts/export-rootfs.py`，只对 SquashFS 副本补零到 4096 字节边界。IB 同时使用 `CONFIG_TARGET_ROOTFS_TARGZ=y` 从组装目录直接生成官方根目录归档，导出时原样复制，不从 SquashFS 反向提取。
 
-`images/luci/files/` 是该 rootfs 的注入目录。例如静态 IP 配置放在 `images/luci/files/etc/config/network`；目前没有预设新的网络配置，沿用包内默认值。构建助手将目录复制为 `work/luci-files/`，保留权限、隐藏文件和符号链接，并排除用于跟踪空目录的 `.gitkeep`。注入文件也保存在证据中。现有 `files/sbin/sd-init` 保持用于源码构建的早期启动入口，不自动注入这个外置 rootfs。
+报告记录 SquashFS 原始前缀摘要和追加字节、tar.gz 摘要、注入配置内容和权限，以及禁用服务启动链接的实际观察值，不根据观察结果控制上传。hostname 在组装阶段观察的是首次启动脚本，实际生效仍需启动观察。选择 `luci` 时还记录界面入口和服务信息，不在 amd64 构建机运行 ARM 服务。
+
+`images/<配方名>/files/` 是注入目录。构建助手将它复制为 `work/<配方名>-files/`，保留权限、隐藏文件和符号链接，排除用于跟踪空目录的 `.gitkeep`。`pogowrt` 提供三个 UCI 配置文件和 hostname 脚本，`luci` 暂沿用包内默认配置。注入文件也保存在证据中。现有 `files/sbin/sd-init` 保持用于源码构建的早期启动入口，不自动注入这些外置 rootfs。
 
 若需要在自己的 Linux x86_64 环境使用 IB，安装 GNU make、tar、zstd 及 IB 所需的宿主依赖，用 `tar --zstd -xf` 解压，进入归档中的 `openwrt-imagebuilder-…` 顶层目录，先执行 `make info` 查看设备配置。
 
@@ -149,7 +161,7 @@ make image PROFILE=cloudengines_pogoplugv4 \
   FILES="/绝对路径/自定义files目录"
 ```
 
-手动调用时，`FILES` 下的 `etc/config/network` 同样可以注入静态 IP。官方 IB 不会自动收录源码构建时通过 `files/` 注入的全部自定义文件；应明确选择需要的文件目录。新工作流已经通过 `images/luci/files/` 管理它们。
+手动调用时，`FILES` 下的 `etc/config/network` 同样可以注入静态 IP。官方 IB 不会自动收录源码构建时通过 `files/` 注入的全部自定义文件；应明确选择需要的文件目录。新工作流通过各配方的 `files/` 管理它们。
 
 该 IB 携带本次定制的预编译内核和已编译软件包，适合重新组装外置 rootfs 和设备镜像；未编译的软件包不在离线仓库中。新内核模块需要来自匹配的内核构建。IB 不重新编译 Linux，也不重新生成内嵌 initramfs 的内核。因此它不能把更新后的 `sd-init` 或网络配置编入新的 `lio-uImage`，更新内嵌 rootfs 仍使用源码构建流程。
 
@@ -178,4 +190,4 @@ make image PROFILE=cloudengines_pogoplugv4 \
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 ```
 
-这些测试覆盖配置合成、共用包清单、IB 调用参数、注入文件权限和链接、导出补零、失败操作的退出结果、报告行为及阶段调用顺序。IB 调用测试使用临时 Makefile，不运行真实 IB 或完整 OpenWrt 构建，也不代表真实固件已完成验收。后续自动化协作遵循 `AGENTS.md` 中的报告原则。
+这些测试覆盖配置合成、配方选择、共用包清单、禁用服务参数及观察值、IB 调用参数、注入文件权限和链接、导出补零、失败操作的退出结果、报告行为及阶段调用顺序。IB 调用测试使用临时 Makefile，不运行真实 IB 或完整 OpenWrt 构建，也不代表真实固件已完成验收。后续自动化协作遵循 `AGENTS.md` 中的报告原则。

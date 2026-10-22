@@ -1,8 +1,16 @@
-name: Assemble LuCI rootfs from ImageBuilder
+name: Assemble rootfs from ImageBuilder
 
 on:
   workflow_dispatch:
     inputs:
+      image:
+        description: 'Rootfs recipe'
+        required: true
+        type: choice
+        default: pogowrt
+        options:
+          - pogowrt
+          - luci
       source_run_id:
         description: 'Source build run ID that uploaded the ImageBuilder'
         required: true
@@ -18,12 +26,13 @@ permissions:
   actions: read
 
 env:
+  IMAGE: ${{ inputs.image }}
   SOURCE_RUN_ID: ${{ inputs.source_run_id }}
   SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
 
 jobs:
   assemble:
-    name: PogoPlug V4 LuCI rootfs
+    name: PogoPlug V4 ${{ inputs.image }} rootfs
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -61,7 +70,7 @@ jobs:
             "$GITHUB_WORKSPACE/work/downloads/pogov4-imagebuilder-${SOURCE_RUN_ID}-${SOURCE_RUN_ATTEMPT}.tar.zst" \
             -C "$GITHUB_WORKSPACE/work/imagebuilder" --strip-components=1
 
-      - name: Assemble rootfs with LuCI
+      - name: Assemble selected rootfs
         id: assemble
         shell: bash
         timeout-minutes: 40
@@ -71,10 +80,10 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/evidence"
           python3 "$GITHUB_WORKSPACE/project/scripts/build-rootfs.py" \
             --project "$GITHUB_WORKSPACE/project" \
-            --workspace "$GITHUB_WORKSPACE" \
+            --workspace "$GITHUB_WORKSPACE" --image "$IMAGE" \
             2>&1 | tee "$GITHUB_WORKSPACE/evidence/imagebuilder.log"
 
-      - name: Export aligned LuCI rootfs
+      - name: Export rootfs image and archive
         id: export_rootfs
         if: ${{ !cancelled() && steps.assemble.outcome == 'success' }}
         shell: bash
@@ -83,8 +92,10 @@ jobs:
           umask 022
           python3 "$GITHUB_WORKSPACE/project/scripts/export-rootfs.py" \
             --source "$GITHUB_WORKSPACE/work/imagebuilder/build_dir/target-arm_xscale_musl_eabi/linux-kirkwood_generic/root.squashfs" \
-            --output "$GITHUB_WORKSPACE/artifacts/luci/luci-root-aligned.squashfs" \
+            --output "$GITHUB_WORKSPACE/artifacts/$IMAGE/${IMAGE}-root-aligned.squashfs" \
             --record "$GITHUB_WORKSPACE/evidence/export-operation.json"
+          cp "$GITHUB_WORKSPACE"/work/imagebuilder/bin/targets/kirkwood/generic/*-rootfs.tar.gz \
+            "$GITHUB_WORKSPACE/artifacts/$IMAGE/${IMAGE}-rootfs.tar.gz"
 
       - name: Report IB provenance and rootfs images
         if: ${{ always() }}
@@ -95,19 +106,22 @@ jobs:
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/evidence"
           python3 "$GITHUB_WORKSPACE/project/scripts/report-repack.py" \
-            --workspace "$GITHUB_WORKSPACE" \
+            --workspace "$GITHUB_WORKSPACE" --image "$IMAGE" \
             | tee "$GITHUB_WORKSPACE/evidence/repack-report.json"
 
-      - name: Report assembled rootfs and LuCI files
+      - name: Report assembled rootfs and recipe files
         if: ${{ always() }}
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/evidence"
+          extra_args=()
+          if [ "$IMAGE" = luci ]; then extra_args+=(--luci); fi
           python3 "$GITHUB_WORKSPACE/project/scripts/report-rootfs.py" \
             --root "$GITHUB_WORKSPACE/work/imagebuilder/build_dir/target-arm_xscale_musl_eabi/root-kirkwood" \
             --kernel-config "$GITHUB_WORKSPACE/work/imagebuilder/build_dir/target-arm_xscale_musl_eabi/linux-kirkwood_generic/linux-6.12.*/.config" \
-            --luci | tee "$GITHUB_WORKSPACE/evidence/rootfs-report.json"
+            --recipe "$GITHUB_WORKSPACE/project/images/$IMAGE" \
+            "${extra_args[@]}" | tee "$GITHUB_WORKSPACE/evidence/rootfs-report.json"
 
       - name: Package assembly evidence
         if: ${{ always() }}
@@ -117,14 +131,14 @@ jobs:
           umask 022
           mkdir -p "$GITHUB_WORKSPACE/evidence" "$GITHUB_WORKSPACE/delivery"
           tar -C "$GITHUB_WORKSPACE" -czf \
-            "$GITHUB_WORKSPACE/delivery/pogov4-luci-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tar.gz" evidence
+            "$GITHUB_WORKSPACE/delivery/pogov4-${IMAGE}-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tar.gz" evidence
 
-      - name: Upload LuCI rootfs
+      - name: Upload rootfs image and archive
         id: rootfs
         if: ${{ !cancelled() && steps.export_rootfs.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: pogov4-luci-rootfs-${{ github.run_id }}-${{ github.run_attempt }}
+          name: pogov4-${{ inputs.image }}-rootfs-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/
           compression-level: 0
 
@@ -133,7 +147,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          path: delivery/pogov4-luci-evidence-${{ github.run_id }}-${{ github.run_attempt }}.tar.gz
+          path: delivery/pogov4-${{ inputs.image }}-evidence-${{ github.run_id }}-${{ github.run_attempt }}.tar.gz
           archive: false
 
       - name: Write download information
@@ -153,7 +167,8 @@ jobs:
               "$GITHUB_REPOSITORY" "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT"
             printf '|交付物|下载入口|Artifact ID|Artifact SHA-256|\n'
             printf '|---|---|---|---|\n'
-            printf '|LuCI rootfs|%s|%s|%s|\n' \
+            printf '|%s rootfs|%s|%s|%s|\n' \
+              "$IMAGE" \
               "${ROOTFS_URL:-未取得，参见上传步骤记录}" "${ROOTFS_ID:-未取得}" "${ROOTFS_DIGEST:-未取得}"
             printf '|组装证据|%s|%s|%s|\n' \
               "${EVIDENCE_URL:-未取得，参见上传步骤记录}" "${EVIDENCE_ID:-未取得}" "${EVIDENCE_DIGEST:-未取得}"

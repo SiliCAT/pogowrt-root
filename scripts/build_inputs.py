@@ -1,5 +1,7 @@
 """Shared inputs for source compilation and ImageBuilder assembly."""
 
+IMAGE_NAMES = ("pogowrt", "luci")
+
 
 def package_list(path):
     """Read one package name per line, with comments and blank lines allowed."""
@@ -20,8 +22,8 @@ def source_config(project):
     )
 
 
-def image_packages(project):
+def image_packages(project, image):
     return list(dict.fromkeys(
         package_list(project / "configs/packages/base.list")
-        + package_list(project / "images/luci/packages.list")
+        + package_list(project / "images" / image / "packages.list")
     ))

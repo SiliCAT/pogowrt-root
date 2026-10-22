@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 import re
 
 from reporting import ObservationUnavailable, Report, command_output, config_values, digest, file_metadata
+from build_inputs import package_list
 
 
 class Rootfs:
@@ -41,6 +42,14 @@ class Rootfs:
 
 def readelf(path, option):
     return command_output(["readelf", "--wide", option, str(path)])
+
+
+def startup_links(rootfs, service):
+    return sorted(
+        str(path.relative_to(rootfs.root))
+        for path in rootfs.resolve("/etc/rc.d").iterdir()
+        if path.name.startswith("S") and path.name.endswith(service)
+    )
 
 
 def report_elf(report, rootfs, name):
@@ -170,6 +179,7 @@ def main():
     parser.add_argument("--kernel-config", type=Path, required=True)
     parser.add_argument("--sd-init", type=Path)
     parser.add_argument("--luci", action="store_true", help="Record LuCI files, services and executables")
+    parser.add_argument("--recipe", type=Path, help="Record injected files and disabled service startup links")
     args = parser.parse_args()
     report = Report()
     rootfs = Rootfs(args.root)
@@ -182,7 +192,20 @@ def main():
         for name in ["/www/cgi-bin/luci", "/etc/config/uhttpd", "/etc/init.d/uhttpd", "/etc/init.d/rpcd"]:
             report.observe(f"LuCI file: {name}", "Installed LuCI entry point or service configuration", lambda name=name: file_metadata(rootfs.resolve(name)))
         for service in ["uhttpd", "rpcd"]:
-            report.observe(f"LuCI service links: {service}", "Startup links installed by package defaults", lambda service=service: sorted(str(path.relative_to(rootfs.root)) for path in rootfs.resolve("/etc/rc.d").glob(f"S*{service}")))
+            report.observe(f"LuCI service links: {service}", "Startup links installed by package defaults", lambda service=service: startup_links(rootfs, service))
+    if args.recipe is not None:
+        inputs = args.recipe / "files"
+        paths = report.observe("Recipe file candidates", "Files injected by the selected recipe", lambda: sorted(path for path in inputs.rglob("*") if (path.is_file() or path.is_symlink()) and path.name != ".gitkeep"))
+        for path in paths or []:
+            name = "/" + str(path.relative_to(inputs))
+            expected = report.observe(f"Recipe file SHA-256: {name}", "Record recipe input digest", lambda path=path: digest(path))
+            report.observe(f"Installed recipe file: {name}", "Injected file with original permissions", lambda name=name: file_metadata(rootfs.resolve(name)))
+            report.observe(f"Installed recipe file SHA-256: {name}", expected or "Same content as recipe input", lambda name=name: digest(rootfs.resolve(name)))
+            report.observe(f"Installed recipe file contents: {name}", "Record assembled configuration or first-boot script; runtime effects require boot observations", lambda name=name: rootfs.resolve(name).read_text())
+        services = report.observe("Disabled service requirements", "Read the selected recipe's startup exclusions", lambda: package_list(args.recipe / "disabled-services.list"))
+        for service in services or []:
+            report.observe(f"Service init script: {service}", "Retained package service script", lambda service=service: file_metadata(rootfs.resolve(f"/etc/init.d/{service}")))
+            report.observe(f"Disabled service startup links: {service}", [], lambda service=service: startup_links(rootfs, service))
     report_programs(report, rootfs, ["/usr/sbin/uhttpd", "/sbin/rpcd", "/usr/bin/ucode"] if args.luci else [])
     report_modules(report, rootfs, args.kernel_config)
     report.emit()
