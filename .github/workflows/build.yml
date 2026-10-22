@@ -150,6 +150,7 @@ jobs:
             | tee "$GITHUB_WORKSPACE/evidence/download.log"
 
       - name: Build complete firmware
+        id: build_firmware
         working-directory: work/openwrt
         shell: bash
         timeout-minutes: 300
@@ -229,6 +230,28 @@ jobs:
             --workspace "$GITHUB_WORKSPACE" \
             | tee "$GITHUB_WORKSPACE/evidence/exported-images-report.json"
 
+      - name: Export standalone ImageBuilder archive
+        id: export_imagebuilder
+        if: ${{ !cancelled() && steps.build_firmware.outcome == 'success' }}
+        working-directory: work/openwrt
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          mkdir -p "$GITHUB_WORKSPACE/delivery"
+          cp bin/targets/kirkwood/generic/openwrt-imagebuilder-*kirkwood-generic.Linux-x86_64.tar.zst \
+            "$GITHUB_WORKSPACE/delivery/pogov4-imagebuilder-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tar.zst"
+
+      - name: Report built and exported ImageBuilder archives
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          python3 "$GITHUB_WORKSPACE/project/scripts/report-build.py" imagebuilder \
+            --workspace "$GITHUB_WORKSPACE" \
+            | tee "$GITHUB_WORKSPACE/evidence/imagebuilder-report.json"
+
       - name: Collect build evidence
         if: ${{ always() }}
         shell: bash
@@ -277,6 +300,14 @@ jobs:
           path: delivery/pogov4-evidence-${{ github.run_id }}-${{ github.run_attempt }}.tar.gz
           archive: false
 
+      - name: Upload standalone ImageBuilder
+        id: imagebuilder
+        if: ${{ !cancelled() && steps.export_imagebuilder.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          path: delivery/pogov4-imagebuilder-${{ github.run_id }}-${{ github.run_attempt }}.tar.zst
+          archive: false
+
       - name: Write artifact download information
         if: ${{ always() }}
         shell: bash
@@ -287,6 +318,9 @@ jobs:
           EVIDENCE_ARTIFACT_URL: ${{ steps.evidence.outputs.artifact-url }}
           EVIDENCE_ARTIFACT_ID: ${{ steps.evidence.outputs.artifact-id }}
           EVIDENCE_ARTIFACT_DIGEST: ${{ steps.evidence.outputs.artifact-digest }}
+          IB_ARTIFACT_URL: ${{ steps.imagebuilder.outputs.artifact-url }}
+          IB_ARTIFACT_ID: ${{ steps.imagebuilder.outputs.artifact-id }}
+          IB_ARTIFACT_DIGEST: ${{ steps.imagebuilder.outputs.artifact-digest }}
         run: |
           set -euo pipefail
           {
@@ -298,5 +332,8 @@ jobs:
             printf '|构建证据|%s|%s|%s|\n' \
               "${EVIDENCE_ARTIFACT_URL:-未取得，参见上传步骤记录}" \
               "${EVIDENCE_ARTIFACT_ID:-未取得}" "${EVIDENCE_ARTIFACT_DIGEST:-未取得}"
+            printf '|ImageBuilder|%s|%s|%s|\n' \
+              "${IB_ARTIFACT_URL:-未取得，参见上传步骤记录}" \
+              "${IB_ARTIFACT_ID:-未取得}" "${IB_ARTIFACT_DIGEST:-未取得}"
             printf '\n检查报告仅列要求值、实际观察值及无法取得信息的原因；此处不提供固件质量或实机验收结论。\n'
           } >> "$GITHUB_STEP_SUMMARY"

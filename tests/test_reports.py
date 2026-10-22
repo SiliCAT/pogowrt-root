@@ -69,7 +69,7 @@ class ReportsTest(unittest.TestCase):
         )
 
     def test_all_phases_report_with_missing_build_outputs(self):
-        for phase in ["runner", "source", "feeds", "inputs", "resolved-config", "built-configs", "evidence", "disk"]:
+        for phase in ["runner", "source", "feeds", "inputs", "resolved-config", "built-configs", "imagebuilder", "evidence", "disk"]:
             with self.subTest(phase=phase):
                 self.build_report(phase)
         for phase in ["built", "exported"]:
@@ -90,6 +90,27 @@ class ReportsTest(unittest.TestCase):
         self.assertIsNone(missing["observed"])
         self.assertIsNotNone(missing["unavailable_reason"])
         self.assertEqual((self.workspace / "evidence/openwrt.config.resolved").read_bytes(), config.read_bytes())
+
+    def test_imagebuilder_reports_all_archives_and_differences_without_a_verdict(self):
+        config = self.write("work/openwrt/.config", "# CONFIG_IB is not set\nCONFIG_IB_STANDALONE=y\n")
+        archive = self.write("work/openwrt/bin/targets/kirkwood/generic/openwrt-imagebuilder-kirkwood-generic.Linux-x86_64.tar.zst", b"source archive fixture")
+        versioned = self.write("work/openwrt/bin/targets/kirkwood/generic/openwrt-imagebuilder-25.12.0-kirkwood-generic.Linux-x86_64.tar.zst", b"another archive fixture")
+        exported = self.write("delivery/pogov4-imagebuilder-123-1.tar.zst", b"different export fixture")
+        rows = self.build_report("imagebuilder")
+        self.assertEqual(rows[f"{config}: CONFIG_IB"]["requirement"], "y")
+        self.assertEqual(rows[f"{config}: CONFIG_IB"]["observed"], "n")
+        self.assertEqual(len(rows["Built ImageBuilder archive candidates"]["observed"]), 2)
+        for path in [archive, versioned]:
+            self.assertEqual(rows[f"Built ImageBuilder SHA-256: {path}"]["observed"], hashlib.sha256(path.read_bytes()).hexdigest())
+        self.assertEqual(rows[f"Exported ImageBuilder SHA-256: {exported}"]["observed"], hashlib.sha256(exported.read_bytes()).hexdigest())
+        self.assertEqual(rows[f"Exported ImageBuilder file: {exported}"]["observed"]["bytes"], len(exported.read_bytes()))
+
+    def test_missing_imagebuilder_still_records_export_observations(self):
+        rows = self.build_report("imagebuilder")
+        self.assertEqual(rows["Built ImageBuilder archive candidates"]["observed"], [])
+        self.assertIsNotNone(rows["Built ImageBuilder archive metadata"]["unavailable_reason"])
+        self.assertEqual(rows["Exported ImageBuilder archive candidates"]["observed"], [])
+        self.assertIsNotNone(rows["Exported ImageBuilder archive metadata"]["unavailable_reason"])
 
     def test_multiple_kernel_configurations_are_all_reported(self):
         self.write("project/configs/kernel.config", "CONFIG_TARGET_CORE=y\n")

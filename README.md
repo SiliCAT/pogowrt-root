@@ -1,8 +1,8 @@
 # pogowrt-root
 
-为 PogoPlug V4 交叉编译包含完整 rootfs 的 OpenWrt initramfs-uImage，并导出独立 SquashFS 镜像。
+为 PogoPlug V4 交叉编译包含完整 rootfs 的 OpenWrt initramfs-uImage，并导出独立 SquashFS 镜像和包含本次已编译软件包的 ImageBuilder。
 
-本轮交付完整源码构建工作流、配置输入、已有 SD 启动入口和观测报告工具。当前实现已经过本地语法及模拟数据验证；尚未在 GitHub Actions 完成首次干净构建，也没有本次产物的实机启动记录。
+本轮交付完整源码构建工作流、配置输入、已有 SD 启动入口和观测报告工具。提交 `370146e` 的 [Actions 运行 39735742145](https://github.com/SiliCAT/pogowrt-root/actions/runs/39735742145) 已取得完整编译和两份镜像导出的记录。本次新增的 ImageBuilder 交付尚待首次实际构建；没有实机启动记录。
 
 ## 构建输入和能力
 
@@ -15,6 +15,8 @@
 | `files/sbin/sd-init` | 早期 SD 启动入口，权限为 0755 |
 
 软件包选择包含 blkid、losetup、util-linux flock、loop、VFAT、F2FS、XFS、USB 存储、LVM 工具及 NFSv4 客户端。NFSv4 使用 `kmod-fs-nfs-v4` 和 `nfs-utils-v4`，依赖由 OpenWrt 配置系统展开。
+
+`CONFIG_IB=y` 让官方构建流程生成 ImageBuilder，`CONFIG_IB_STANDALONE=y` 将本次已编译的软件包归档一起包含进去。这些选项不表示编译或收录所有 feeds 软件包。
 
 NFSv4 本轮只作为镜像中的可用能力选入。已有 `sd-init` 保持审阅版本：只读挂载 LABEL=BOOT 的 MMC/FAT 分区，然后交接到 FAT 内的 `/boot/init`；实际运行路径为 `/boot/boot/init`。网络初始化、NFS 挂载、远程镜像的 loop 挂载和根目录交接留待后续修订配套启动脚本。
 
@@ -62,7 +64,7 @@ make -j2 V=s
 
 内核配置阶段的输出保存为 `evidence/kernel-olddefconfig.log`，两个阶段的输出和合计耗时保存在 `evidence/build.log`，共享原来的 300 分钟步骤上限。依赖条件不满足时，Kconfig 仍可能调整要求的功能，最终值由现有报告记录。
 
-整个 job 上限为 360 分钟，完整编译步骤上限为 300 分钟。这些是执行时限，首次干净构建的实际耗时和磁盘占用尚待记录。工作流只配置手动触发。
+整个 job 上限为 360 分钟，完整编译步骤上限为 300 分钟。运行 39735742145 中，尚未启用 ImageBuilder 的构建步骤耗时约 55 分 10 秒，末尾磁盘剩余约 75 GB；新增 IB 打包的耗时和体积尚待记录。工作流只配置手动触发。
 
 ## 下载交付物
 
@@ -70,12 +72,31 @@ make -j2 V=s
 |---|---|
 | `pogov4-images-<run_id>-<run_attempt>` | ZIP，包含 `openwrt/lio-uImage` 和 `openwrt/lio-root-aligned.squashfs` |
 | `pogov4-evidence-<run_id>-<run_attempt>.tar.gz` | 直接下载的证据归档，内部目录为 `evidence/` |
+| `pogov4-imagebuilder-<run_id>-<run_attempt>.tar.zst` | 直接下载的官方 ImageBuilder 归档，包含本次已编译的软件包 |
 
 SquashFS 对构建原文件的副本补零到 4096 字节边界，构建原文件不改动。报告记录原长度、导出长度、原始前缀摘要和追加字节信息。
 
 证据包含项目提交、源码和 feeds 版本、原始输入、配置快照、软件包 manifest、日志、资源记录以及 JSON 报告。tar 归档保留 `.config` 等隐藏文件和原始脚本权限。保留期限沿用仓库设置，下载入口和 artifact 摘要会出现在运行摘要中。
 
-镜像上传以导出操作完成为前提；证据收集、打包和上传在前面步骤报错后也尽量执行。运行取消、总时限耗尽或基础设施故障可能使收尾操作无法完成。首版使用 Actions artifacts 交付文件。
+IB 由官方构建流程在 `bin/targets/kirkwood/generic/` 中生成。工作流原样复制归档，仅将外部文件名改为上表中的名称，归档内的顶层目录名保持原样。上传使用 `archive: false`，不会在 `.tar.zst` 外再套一层 ZIP；权限、隐藏文件和链接保留在官方归档中。`evidence/imagebuilder-report.json` 记录 IB 配置值、构建及导出文件的候选路径、大小、权限和 SHA-256；缺少信息时记录原因。
+
+镜像和 IB 分别以各自导出操作完成为上传前提。IB 导出在完整编译完成后执行，即使镜像导出操作报错，仍会尝试导出 IB。证据收集、打包和上传在前面步骤报错后也尽量执行。运行取消、总时限耗尽或基础设施故障可能使收尾操作无法完成。首版使用 Actions artifacts 交付文件。
+
+## 使用 ImageBuilder
+
+下载 IB 后，在兼容的 Linux x86_64 环境中安装 GNU make、tar、zstd 及 IB 所需的宿主依赖。用 `tar --zstd -xf` 解压下载的文件，进入归档中的 `openwrt-imagebuilder-…` 顶层目录，先执行 `make info` 查看设备配置。
+
+如果需要保留本仓库选入的软件包，组装时应显式传入 `PACKAGES`。本地仓库收录某个软件包，并不表示每次组装都会自动安装它。下面的 `FILES` 需要替换为准备好的文件目录的绝对路径：
+
+```sh
+make image PROFILE=cloudengines_pogoplugv4 \
+  PACKAGES="blkid flock losetup kmod-loop kmod-fs-vfat kmod-fs-f2fs kmod-fs-nfs-v4 kmod-fs-xfs kmod-usb-storage lvm2 nfs-utils-v4" \
+  FILES="/绝对路径/自定义files目录"
+```
+
+例如，静态 IP 配置放在该目录下的 `etc/config/network`。需要保留本仓库的自定义文件时，可用仓库 `files/` 或证据包中的 `evidence/inputs/files/` 作为基础，再加入其他配置。官方 IB 不会自动收录源码构建时通过 `files/` 注入的全部自定义文件。
+
+该 IB 携带本次定制的预编译内核和已编译软件包，适合重新组装外置 rootfs 和设备镜像；未编译的软件包不在离线仓库中。新内核模块需要来自匹配的内核构建。IB 不重新编译 Linux，也不重新生成内嵌 initramfs 的内核。因此它不能把更新后的 `sd-init` 或网络配置编入新的 `lio-uImage`，更新内嵌 rootfs 仍使用源码构建流程。
 
 ## 检查只生成报告
 

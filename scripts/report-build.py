@@ -16,6 +16,8 @@ STORAGE_OPTIONS = [
     "F2FS_FS", "XFS_FS", "SQUASHFS", "OVERLAY_FS",
 ]
 
+IMAGEBUILDER_PATTERN = "openwrt-imagebuilder-*kirkwood-generic.Linux-x86_64.tar.zst"
+
 
 def snapshot(report, source, destination):
     def collect():
@@ -27,7 +29,7 @@ def snapshot(report, source, destination):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=["runner", "source", "feeds", "inputs", "resolved-config", "built-configs", "evidence", "disk"])
+    parser.add_argument("phase", choices=["runner", "source", "feeds", "inputs", "resolved-config", "built-configs", "imagebuilder", "evidence", "disk"])
     parser.add_argument("--workspace", type=Path, required=True)
     args = parser.parse_args()
     workspace = args.workspace
@@ -111,6 +113,23 @@ def main():
                 snapshot(report, candidate, evidence / "configs" / candidate.relative_to(source))
             if not candidates:
                 report_config(report, source / pattern, requirements)
+
+    elif args.phase == "imagebuilder":
+        report_config(report, source / ".config", {"CONFIG_IB": "y", "CONFIG_IB_STANDALONE": "y"})
+        for label, directory, pattern in [
+            ("Built", source / "bin/targets/kirkwood/generic", IMAGEBUILDER_PATTERN),
+            ("Exported", workspace / "delivery", "pogov4-imagebuilder-*.tar.zst"),
+        ]:
+            candidates = report.observe(
+                f"{label} ImageBuilder archive candidates", {"directory": str(directory), "pattern": pattern},
+                lambda directory=directory, pattern=pattern: sorted(directory.glob(pattern)),
+            )
+            for candidate in candidates or []:
+                report.observe(f"{label} ImageBuilder file: {candidate}", "Native standalone ImageBuilder .tar.zst archive", lambda candidate=candidate: file_metadata(candidate))
+                requirement = "Record source archive digest" if label == "Built" else "Same digest as the selected built archive; see its SHA-256 observation"
+                report.observe(f"{label} ImageBuilder SHA-256: {candidate}", requirement, lambda candidate=candidate: digest(candidate))
+            if not candidates:
+                report.add(f"{label} ImageBuilder archive metadata", "Record file metadata and SHA-256", unavailable_reason="No archive was located; see the candidate search observation")
 
     elif args.phase == "evidence":
         report.observe("Project HEAD", "Record the project revision used by this run", lambda: command_output(["git", "rev-parse", "HEAD"], cwd=project))

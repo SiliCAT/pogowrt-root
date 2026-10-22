@@ -55,7 +55,11 @@ def file_metadata(path):
 
 
 def digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    checksum = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            checksum.update(chunk)
+    return checksum.hexdigest()
 
 
 def config_values(path):
