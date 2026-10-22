@@ -9,7 +9,7 @@ import shutil
 
 from build_inputs import IMAGE_NAMES, image_packages, package_list
 from image_metadata import padding_bytes, prefix_digest, squashfs_header
-from reporting import Report, command_output, digest, file_metadata
+from reporting import ObservationUnavailable, Report, command_output, digest, file_metadata
 
 
 def snapshot(report, source, destination):
@@ -53,8 +53,17 @@ def main():
     report.observe("Requested disabled services", "Services excluded from automatic startup", lambda: package_list(project / "images" / args.image / "disabled-services.list"))
     for relative in ["configs/packages/base.list", f"images/{args.image}/packages.list", f"images/{args.image}/disabled-services.list"]:
         snapshot(report, project / relative, evidence / "inputs" / relative)
-    for relative in [".config", ".targetinfo", ".packageinfo"]:
+    for relative in [".config", ".targetinfo", ".packageinfo", "repositories"]:
         snapshot(report, builder / relative, evidence / "imagebuilder" / relative)
+    report.observe("IB repositories contents", "Empty list for standalone IB without remote package sources; retain an existing list", lambda: (builder / "repositories").read_text())
+    openssl_config = workspace / "work/imagebuilder-openssl.cnf"
+    def signing_config_path():
+        inputs = json.loads((evidence / "assembly-inputs.json").read_text())
+        if "openssl_conf" not in inputs:
+            raise ObservationUnavailable("Assembly inputs do not record an OPENSSL_CONF path")
+        return inputs["openssl_conf"]
+    report.observe("IB signing OPENSSL_CONF path", "Host configuration copy passed to make and its signing subprocesses", signing_config_path)
+    snapshot(report, openssl_config, evidence / "inputs/host-openssl.cnf")
     configs = report.observe("IB kernel configuration candidates", "Actual configuration of the precompiled kernel", lambda: sorted(builder.glob("build_dir/target-arm_xscale_musl_eabi/linux-kirkwood_generic/linux-6.12.*/.config")))
     for path in configs or []:
         snapshot(report, path, evidence / "imagebuilder" / path.relative_to(builder))

@@ -1,0 +1,8 @@
+# Host signing configuration for the LibreSSL CLI bundled in ImageBuilder.
+# Official IB rules supply EC key parameters explicitly on the command line.
+# Keep this portable: LibreSSL does not support OpenSSL 3 provider modules.
+
+[ req ]
+distinguished_name = req_distinguished_name
+
+[ req_distinguished_name ]

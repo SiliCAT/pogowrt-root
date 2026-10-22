@@ -132,6 +132,10 @@ IB 由官方构建流程在 `bin/targets/kirkwood/generic/` 中生成。工作�
 
 解压后，`scripts/build-rootfs.py --image <配方名>` 合并 `configs/packages/base.list` 和 `images/<配方名>/packages.list`，调用官方 IB 的 `make image`。清单允许空行、`#` 注释和每行一个包名；重复名称只安装一次。包依赖由 IB 的包管理器计算。
 
+组装前，助手补充两项宿主准备：为缺少 `repositories` 的 standalone IB 创建空文件，保留已有文件内容；将本仓库 `configs/imagebuilder/openssl.cnf` 复制为 `work/imagebuilder-openssl.cnf`，通过 `OPENSSL_CONF` 传给 make 和签名工具，避免沿用原构建机的绝对配置路径。该配置兼容 IB 附带的 LibreSSL 4.2.1，不加载宿主 OpenSSL 3 的 providers 模块。手动运行助手时可用 `--openssl-config <路径>` 指定其他兼容配置。
+
+这些操作不添加远程包源、不关闭签名校验，也不屏蔽错误输出。配置文件复制、make 和签名操作保留自身执行结果。`assembly-inputs.json` 记录 OpenSSL 配置源与实际传入路径；观察报告保存 repositories 内容及宿主配置副本和摘要，仍只记录观察，不根据检查项控制流程。
+
 `images/<配方名>/disabled-services.list` 每行列一个服务名，传给官方 IB 的 `DISABLED_SERVICES` 参数。IB 取消相应的自动启动链接，保留软件包及配置，不通过首次启动脚本停用服务。`pogowrt` 列出 `dnsmasq`、`odhcpd`，`luci` 清单为空。两种配方不自动继承彼此的文件和服务设置。
 
 `pogowrt` 使用静态 IPv4 `172.16.16.1/24`，保留 `br-lan`/`eth0`，不配置默认网关和 DNS；关闭 LAN 的 IPv6，不整机禁用 IPv6。hostname 由 `99-pogowrt-hostname` 在首次启动时设为 `PogoWrt`。配置细节见 [PogoWrt 配方](images/pogowrt/README.md)。它不追加 LuCI，可使用包含所需基础包的既有 IB。

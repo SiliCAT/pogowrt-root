@@ -27,6 +27,7 @@ class AssemblyTest(unittest.TestCase):
         self.write("project/configs/ib-extra.config", "CONFIG_PACKAGE_luci=m\n")
         self.write("project/images/luci/packages.list", "luci\nflock\n")
         self.write("project/images/luci/disabled-services.list", "# defaults\n")
+        self.openssl_config = self.write("project/configs/imagebuilder/openssl.cnf", "# Host signing configuration fixture\n[req]\ndistinguished_name=req_dn\n[req_dn]\n")
 
     def write(self, relative, content):
         path = self.workspace / relative
@@ -98,6 +99,48 @@ image:
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Error 23", result.stderr)
         self.assertTrue((self.workspace / "evidence/assembly-inputs.json").is_file())
+
+    def test_preparation_provides_repositories_and_openssl_config_to_make(self):
+        self.write("project/images/luci/files/.gitkeep", "")
+        self.write("work/imagebuilder/Makefile", """image:
+\t@test -f repositories
+\t@test ! -s repositories
+\t@test -r "$$OPENSSL_CONF"
+\t@printf '%s' "$$OPENSSL_CONF" > observed-openssl-path
+""")
+        result = self.script("build-rootfs.py", "--project", self.project, "--workspace", self.workspace, "--image", "luci")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        config = self.workspace / "work/imagebuilder-openssl.cnf"
+        self.assertEqual(config.read_bytes(), self.openssl_config.read_bytes())
+        self.assertEqual((self.workspace / "work/imagebuilder/observed-openssl-path").read_text(), str(config))
+        context = json.loads((self.workspace / "evidence/assembly-inputs.json").read_text())
+        self.assertEqual(context["openssl_conf"], str(config))
+        self.assertEqual(context["openssl_conf_source"], str(self.openssl_config))
+        report = self.script("report-repack.py", "--workspace", self.workspace, "--image", "luci")
+        self.assertEqual(report.returncode, 0, report.stderr)
+        rows = {row["item"]: row for row in json.loads(report.stdout)["observations"]}
+        self.assertEqual(rows["IB repositories contents"]["observed"], "")
+        self.assertEqual(rows["IB signing OPENSSL_CONF path"]["observed"], str(config))
+        self.assertEqual((self.workspace / "evidence/inputs/host-openssl.cnf").read_bytes(), config.read_bytes())
+
+    def test_preparation_preserves_existing_repository_definitions(self):
+        self.write("project/images/luci/files/.gitkeep", "")
+        repositories = self.write("work/imagebuilder/repositories", "# Existing repository definitions\n")
+        custom_config = self.write("alternate/openssl.cnf", "# Explicit compatible configuration\n")
+        self.write("work/imagebuilder/Makefile", "image:\n\t@true\n")
+        result = self.script("build-rootfs.py", "--project", self.project, "--workspace", self.workspace, "--image", "luci", "--openssl-config", custom_config)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(repositories.read_text(), "# Existing repository definitions\n")
+        self.assertEqual((self.workspace / "work/imagebuilder-openssl.cnf").read_bytes(), custom_config.read_bytes())
+
+    def test_unreadable_openssl_configuration_exposes_copy_error(self):
+        self.write("project/images/luci/files/.gitkeep", "")
+        self.write("work/imagebuilder/Makefile", "image:\n\t@touch invoked\n")
+        self.openssl_config.unlink()
+        result = self.script("build-rootfs.py", "--project", self.project, "--workspace", self.workspace, "--image", "luci")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("FileNotFoundError", result.stderr)
+        self.assertFalse((self.workspace / "work/imagebuilder/invoked").exists())
 
     def test_pogowrt_recipe_selects_services_and_preserves_configuration_files(self):
         shutil.copytree(PROJECT / "images/pogowrt", self.project / "images/pogowrt")
@@ -185,10 +228,12 @@ image:
         self.assertEqual(rows["Exported rootfs tar archive SHA-256"]["observed"], hashlib.sha256(exported.read_bytes()).hexdigest())
 
     def test_missing_ib_outputs_and_luci_files_still_produce_reports(self):
+        self.write("evidence/assembly-inputs.json", "{}\n")
         result = self.script("report-repack.py", "--workspace", self.workspace, "--image", "luci")
         self.assertEqual(result.returncode, 0, result.stderr)
         rows = {row["item"]: row for row in json.loads(result.stdout)["observations"]}
         self.assertIsNotNone(rows["Original rootfs bytes"]["unavailable_reason"])
+        self.assertIsNotNone(rows["IB signing OPENSSL_CONF path"]["unavailable_reason"])
         result = self.script("report-rootfs.py", "--root", self.workspace / "missing-root", "--kernel-config", self.workspace / "missing-config", "--luci")
         self.assertEqual(result.returncode, 0, result.stderr)
         rows = {row["item"]: row for row in json.loads(result.stdout)["observations"]}
