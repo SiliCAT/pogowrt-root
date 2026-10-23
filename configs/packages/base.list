@@ -10,3 +10,4 @@ kmod-fs-xfs
 kmod-usb-storage
 lvm2
 nfs-utils-v4
+block-mount
